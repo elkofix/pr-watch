@@ -2,7 +2,7 @@ name: pr-watch
 
 on:
   schedule:
-    - cron: "7-59/10 * * * *"
+    - cron: "17,47 * * * *"
   workflow_dispatch:
 
 concurrency:

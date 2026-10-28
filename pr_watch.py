@@ -1,6 +1,6 @@
 """Reviews open, conflict-free Bitbucket PRs where someone mentioned me in a new comment.
 
-Runs from GitHub Actions every 10 min (see .github/workflows/pr-watch.yml). Polling is plain Python;
+Runs from GitHub Actions every 30 min (see .github/workflows/pr-watch.yml). Polling is plain Python;
 Claude (Sonnet 5.5, medium effort) only runs when a PR qualifies: OPEN + merge outcome CLEAN + a
 comment by someone else containing @ME newer than the last one handled.
 
