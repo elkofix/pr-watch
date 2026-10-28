@@ -28,8 +28,13 @@ ALLOWED = (
     "Read Grep Glob Write Edit "
     "Bash(git:*) Bash(curl:*) Bash(docker:*) Bash(python3:*) Bash(./gradlew:*) "
     "Bash(npm:*) Bash(npx:*) Bash(ls:*) Bash(grep:*) Bash(sed:*) Bash(cat:*) Bash(mkdir:*) "
-    "Bash(cp:*) Bash(rm:*) Bash(sleep:*) Bash(openssl:*)"
+    "Bash(cp:*) Bash(rm:*) Bash(sleep:*) Bash(openssl:*) "
+    "Bash(cd:*) Bash(echo:*) Bash(head:*) Bash(tail:*) Bash(wc:*) Bash(tr:*) Bash(cut:*) "
+    "Bash(sort:*) Bash(uniq:*) Bash(find:*) Bash(awk:*) Bash(jq:*) Bash(tee:*) Bash(mv:*) "
+    "Bash(chmod:*) Bash(kill:*) Bash(timeout:*) Bash(date:*) Bash(which:*) Bash(test:*) "
+    "Bash(sudo:*) Bash(java:*) Bash(node:*)"
 )
+# ponytail: this list is not a sandbox (python3/docker/git can run anything); the disposable runner is.
 
 PROMPT = """Review Bitbucket PR {repo}#{pr} ({url}). {author} mentioned me in comment #{cid}: "{text}".
 Read {agents} first and follow it exactly (routine, comment style, verdict, merge rules).
