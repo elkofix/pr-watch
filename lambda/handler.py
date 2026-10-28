@@ -5,8 +5,8 @@ For every open PR in the PIB repos:
     (only=<repo>#<id>), claiming the mention first so it is handled once;
   * a PR the agent already reviewed that now has the approvals Bitbucket requires -> dispatch a
     "merge" check so the agent merges it if nothing blocking changed;
-  * a PR nobody has mentioned me on since it became ready (created, or went from conflicted to
-    CLEAN), after a random 1-5 min wait -> post one reminder asking the author to mention me.
+  * a PR nobody has mentioned me on since it became ready (created, went from conflicted to CLEAN, or got
+    new commits after I took part), after a random 1-5 min wait -> post one reminder asking the author to mention me.
 State lives in DynamoDB (pk = "<repo>#<id>") and is kept for closed PRs too, so a reopened PR is
 not reminded or reviewed twice. The first run only records what already exists.
 Secrets (SSM SecureString): /prwatch/bitbucket-token, /prwatch/github-token.
@@ -174,23 +174,33 @@ def update(pk, fields):
 def process(repo, pr, item, baseline, now):
     pk = f"{repo}#{pr['id']}"
     clean = is_clean(repo, pr["id"])
+    head = pr.get("fromRef", {}).get("latestCommit")
     if item is None:
         if not baseline:  # first ever run: record what exists, react to nothing
             old = mentions_after(repo, pr["id"], 0)
             table.put_item(Item={"pk": pk, "handled": old[-1]["id"] if old else 0, "nudged": True,
-                                 "nudge_at": 0, "clean": clean, "since": 0})
+                                 "nudge_at": 0, "clean": clean, "head": head, "since": 0})
             return
-        item = {"pk": pk, "handled": 0, "nudged": False, "clean": clean,
+        item = {"pk": pk, "handled": 0, "nudged": False, "clean": clean, "head": head,
                 "nudge_at": now + random.randint(60, 300),
                 "since": int(pr.get("createdDate", now * 1000) / 1000)}
         table.put_item(Item=item)
-    elif item.get("clean") is not clean:
-        fields = {"clean": clean}
-        if item.get("clean") is False and clean:  # conflicts just got resolved: remind once more,
-            # unless someone mentions me in the meantime (3 min of slack for a comment posted just before)
+    else:
+        fields = {}
+        if item.get("clean") is not clean:
+            fields["clean"] = clean
+        if item.get("head") != head:
+            fields["head"] = head
+        conflicts_fixed = item.get("clean") is False and clean
+        # new commits on a PR I took part in (reviewed by the agent, or I am a reviewer)
+        engaged = int(item["handled"]) > 0 or any(r["user"]["slug"] == ME for r in pr.get("reviewers", []))
+        pushed = item.get("head") is not None and head is not None and item["head"] != head and engaged
+        if conflicts_fixed or pushed:  # remind once more, unless someone mentions me in the meantime
+            # (3 min of slack for a mention posted just before the change was noticed)
             fields.update(nudged=False, nudge_at=now + random.randint(60, 300), since=now - 180)
-        update(pk, fields)
-        item = {**item, **fields}
+        if fields:
+            update(pk, fields)
+            item = {**item, **fields}
     handled = int(item["handled"])
     mentions = mentions_after(repo, pr["id"], handled)
     if mentions:
