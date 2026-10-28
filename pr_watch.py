@@ -105,7 +105,7 @@ def review(repo, pr, mention):
         if out.get("is_error"):
             print(f"error: {str(out.get('result'))[:300]}", flush=True)
         for denial in out.get("permission_denials", [])[:15]:
-            command = str(denial.get("tool_input", {}).get("command", ""))[:80]
+            command = str(denial.get("tool_input", {}).get("command", ""))[:300]
             print(f"denied: {denial.get('tool_name')} {command}", flush=True)
     except ValueError:
         print(f"unparseable output ({len(done.stdout)} bytes), stderr: {done.stderr[:200]!r}", flush=True)
