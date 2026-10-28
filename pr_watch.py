@@ -25,6 +25,7 @@ INTERVAL = 30 * 60
 TOKEN = os.environ["BITBUCKET_TOKEN"]
 WORKDIR = os.environ.get("WORKDIR", os.path.expanduser("~/work"))  # repos get cloned here
 ONLY = os.environ.get("ONLY", "").strip()  # "repo#id": one-off review of that PR, ignoring state
+ACTION = os.environ.get("ACTION", "review").strip() or "review"  # "review" | "merge"
 # Only what the review routine needs; anything else is denied (no prompt is available headless).
 ALLOWED = (
     "Read Grep Glob Write Edit "
@@ -40,6 +41,13 @@ ALLOWED = (
 
 PROMPT = """Review Bitbucket PR {repo}#{pr} ({url}). {author} mentioned me in comment #{cid}: "{text}".
 Read {agents} first and follow it exactly (routine, comment style, verdict, merge rules).
+Auth: Bearer $BITBUCKET_TOKEN."""
+
+# A PR I already reviewed that now has the approvals Bitbucket requires (any author, mine included).
+PROMPT_MERGE = """Bitbucket PR {repo}#{pr} ({url}) was reviewed before and now has the approvals Bitbucket requires
+(canMerge is true). Read {agents} first (section "Waiting for approvals"). Check whether anything changed
+since my last review comment (new commits, new blocking comments, my own verdict). If so, do the normal
+review routine and do NOT merge. If nothing is blocking, merge it and add a short natural comment saying so.
 Auth: Bearer $BITBUCKET_TOKEN."""
 
 
@@ -69,15 +77,13 @@ def new_mentions(repo, pr_id, after, include_own=False):
 
 
 def review(repo, pr, mention):
-    prompt = PROMPT.format(
-        repo=repo,
-        pr=pr["id"],
-        url=pr["links"]["self"][0]["href"],
-        author=mention["author"]["displayName"],
-        cid=mention["id"],
-        text=mention["text"][:300],
-        agents=os.path.join(HERE, "AGENTS.md"),
-    )
+    common = dict(repo=repo, pr=pr["id"], url=pr["links"]["self"][0]["href"],
+                  agents=os.path.join(HERE, "AGENTS.md"))
+    if mention is None:  # action=merge
+        prompt = PROMPT_MERGE.format(**common)
+    else:
+        prompt = PROMPT.format(author=mention["author"]["displayName"], cid=mention["id"],
+                               text=mention["text"][:300], **common)
     os.makedirs(WORKDIR, exist_ok=True)
     if not shutil.which("claude"):  # installed lazily: runs with nothing to review stay at seconds
         subprocess.run(["npm", "install", "-g", "@anthropic-ai/claude-code"], check=True,
@@ -116,6 +122,10 @@ def scan(state, first_run):
         for pr in get(f"{BASE}/{repo}/pull-requests?state=OPEN&limit=100")["values"]:
             key = f"{repo}#{pr['id']}"
             if ONLY and key != ONLY:
+                continue
+            if ONLY and ACTION == "merge":  # the Lambda saw the PR reach its required approvals
+                print(f"{time.strftime('%F %T')} merge check {key}", flush=True)
+                review(repo, pr, None)
                 continue
             # With ONLY the Lambda already decided (and filtered my own comments unless in test mode).
             mentions = new_mentions(repo, pr["id"], 0 if ONLY else state.get(key, 0), bool(ONLY))

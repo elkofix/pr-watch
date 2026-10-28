@@ -60,4 +60,15 @@ PR's fault: mention, do not block.
 - Nothing blocking: same endpoint with `{"status":"APPROVED"}`. Then merge only if at least one
   reviewer **other than the user** already has `APPROVED` and `/merge` still says `CLEAN`:
   `POST .../pull-requests/<id>/merge?version=<current PR version>`. Otherwise stop after approving.
-- Say in the comment what you did (approved / needs work / merged).
+- After the PUT, read the PR again (`.../pull-requests/<id>`, `reviewers`) and confirm your status is
+  really what you set. Never write "I approved" if it is not there: Bitbucket refuses approvals on the
+  user's own PRs, in which case say the PR is "ready from my side" instead.
+- Say in the comment what you did (approved / ready / needs work / merged).
+
+## Waiting for approvals
+A PR that is ready but cannot be merged yet (it needs more approvals than it has, including the
+user's own PRs) is simply left ready. When it reaches the approvals Bitbucket requires, an automatic
+trigger runs you again on that PR in "merge check" mode: look at what changed since your last review
+comment (new commits, new blocking comments, a NEEDS_WORK from the user). If something changed, do the
+normal routine and do not merge. If nothing is blocking, merge it
+(`POST .../pull-requests/<id>/merge?version=<current PR version>`) and leave a short natural comment.

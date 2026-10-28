@@ -8,6 +8,10 @@ on:
         description: "One-off review of a single PR, ignoring state (e.g. contratacion-front#33)"
         required: false
         default: ""
+      action:
+        description: "review (default) or merge (the PR reached its required approvals)"
+        required: false
+        default: "review"
 
 concurrency:
   group: pr-watch
@@ -42,6 +46,7 @@ jobs:
           BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ONLY: ${{ inputs.only }}
+          ACTION: ${{ inputs.action }}
           LANG: C.UTF-8
           PYTHONUTF8: "1"
         run: python3 pr_watch.py --once

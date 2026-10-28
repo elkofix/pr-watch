@@ -3,6 +3,8 @@
 For every open PR in the PIB repos:
   * a new mention of ME by someone else on a CLEAN PR -> dispatch the review workflow on GitHub
     (only=<repo>#<id>), claiming the mention first so it is handled once;
+  * a PR the agent already reviewed that now has the approvals Bitbucket requires -> dispatch a
+    "merge" check so the agent merges it if nothing blocking changed;
   * a PR nobody has mentioned me on, after a random 1-5 min wait and once it is CLEAN -> post one
     reminder asking the author to mention me.
 State lives in DynamoDB (pk = "<repo>#<id>") and is kept for closed PRs too, so a reopened PR is
@@ -104,14 +106,45 @@ def claim(pk, sets, expect):
         raise
 
 
-def review(pk, last_id, previous):
-    if not claim(pk, {"handled": last_id, "nudged": True}, {"handled": previous}):
-        return
+def dispatch(pk, action):
     status, _ = call("POST", DISPATCH, secret("/prwatch/github-token"),
-                     {"ref": "main", "inputs": {"only": pk}})
+                     {"ref": "main", "inputs": {"only": pk, "action": action}})
+    return status
+
+
+def review(pk, last_id, previous):
+    sets = {"handled": last_id, "nudged": True, "reviewed": True, "merge_requested": False}
+    if not claim(pk, sets, {"handled": previous}):
+        return
+    status = dispatch(pk, "review")
     print(f"{pk} mention #{last_id} -> dispatch {status}")
     if status != 204:  # give the mention back so the next minute retries it
         claim(pk, {"handled": previous}, {"handled": last_id})
+
+
+def merge_check(repo, pr, item):
+    """A PR the agent already reviewed that reached its required approvals: ask the agent to merge it."""
+    pk = f"{repo}#{pr['id']}"
+    if not item.get("reviewed") or item.get("merge_requested"):
+        return
+    if not any(r["status"] == "APPROVED" and r["user"]["slug"] != ME for r in pr.get("reviewers", [])):
+        return
+    info = bb(f"{repo}/pull-requests/{pr['id']}/merge")
+    if not (info.get("canMerge") and info.get("outcome") == "CLEAN"):
+        return
+    try:
+        table.update_item(Key={"pk": pk}, UpdateExpression="SET merge_requested = :t",
+                          ConditionExpression="attribute_not_exists(merge_requested) OR merge_requested = :f",
+                          ExpressionAttributeValues={":t": True, ":f": False})
+    except ClientError as error:
+        if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return
+        raise
+    status = dispatch(pk, "merge")
+    print(f"{pk} reached its approvals -> merge check dispatch {status}")
+    if status != 204:
+        table.update_item(Key={"pk": pk}, UpdateExpression="SET merge_requested = :f",
+                          ExpressionAttributeValues={":f": False})
 
 
 def process(repo, pr, item, baseline, now):
@@ -130,6 +163,7 @@ def process(repo, pr, item, baseline, now):
         if is_clean(repo, pr["id"]):
             review(pk, mentions[-1]["id"], handled)
         return
+    merge_check(repo, pr, item)
     if item["nudged"] or now < int(item["nudge_at"]):
         return
     own = pr["author"]["user"]["slug"] == ME and not TEST_OWN
