@@ -1,8 +1,7 @@
 name: pr-watch
 
 on:
-  schedule:
-    - cron: "17,47 * * * *"
+  # Triggered every 30 min by cron-job.org through the workflow_dispatch API (GitHub cron never fired).
   workflow_dispatch:
     inputs:
       only:
