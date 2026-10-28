@@ -4,6 +4,11 @@ on:
   schedule:
     - cron: "17,47 * * * *"
   workflow_dispatch:
+    inputs:
+      only:
+        description: "One-off review of a single PR, ignoring state (e.g. contratacion-front#33)"
+        required: false
+        default: ""
 
 concurrency:
   group: pr-watch
@@ -33,10 +38,9 @@ jobs:
         with:
           node-version: "22"
 
-      - run: npm install -g @anthropic-ai/claude-code
-
       - name: Scan PRs
         env:
           BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          ONLY: ${{ inputs.only }}
         run: python3 pr_watch.py --once

@@ -10,6 +10,7 @@ First run (no state.json) records the existing mentions as handled: no backlog r
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -23,6 +24,7 @@ STATE = os.path.join(HERE, "state.json")
 INTERVAL = 30 * 60
 TOKEN = os.environ["BITBUCKET_TOKEN"]
 WORKDIR = os.environ.get("WORKDIR", os.path.expanduser("~/work"))  # repos get cloned here
+ONLY = os.environ.get("ONLY", "").strip()  # "repo#id": one-off review of that PR, ignoring state
 # Only what the review routine needs; anything else is denied (no prompt is available headless).
 ALLOWED = (
     "Read Grep Glob Write Edit "
@@ -77,6 +79,9 @@ def review(repo, pr, mention):
         agents=os.path.join(HERE, "AGENTS.md"),
     )
     os.makedirs(WORKDIR, exist_ok=True)
+    if not shutil.which("claude"):  # installed lazily: runs with nothing to review stay at seconds
+        subprocess.run(["npm", "install", "-g", "@anthropic-ai/claude-code"], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     # Output is discarded on purpose: this repo is public and the logs would leak private code.
     try:
         subprocess.run(
@@ -96,7 +101,9 @@ def scan(state, first_run):
     for repo in REPOS:
         for pr in get(f"{BASE}/{repo}/pull-requests?state=OPEN&limit=100")["values"]:
             key = f"{repo}#{pr['id']}"
-            mentions = new_mentions(repo, pr["id"], state.get(key, 0))
+            if ONLY and key != ONLY:
+                continue
+            mentions = new_mentions(repo, pr["id"], 0 if ONLY else state.get(key, 0))
             if not mentions:
                 continue
             last = mentions[-1]
@@ -112,7 +119,7 @@ def scan(state, first_run):
 
 
 def main():
-    first_run = not os.path.exists(STATE)
+    first_run = not os.path.exists(STATE) and not ONLY
     state = json.load(open(STATE)) if not first_run else {}
     while True:
         try:
