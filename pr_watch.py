@@ -55,15 +55,15 @@ def comments(nodes):
         yield from comments(node.get("comments", []))
 
 
-def new_mentions(repo, pr_id, after):
-    """Mentions of me by others with id > after, oldest first."""
+def new_mentions(repo, pr_id, after, include_own=False):
+    """Mentions of me with id > after, oldest first. Mine only count when include_own is set."""
     activities = get(f"{BASE}/{repo}/pull-requests/{pr_id}/activities?limit=100")["values"]
     found = [
         c
         for a in activities
         if a.get("comment")
         for c in comments([a["comment"]])
-        if f"@{ME}" in c["text"].lower() and c["author"]["slug"] != ME and c["id"] > after
+        if f"@{ME}" in c["text"].lower() and (include_own or c["author"]["slug"] != ME) and c["id"] > after
     ]
     return sorted(found, key=lambda c: c["id"])
 
@@ -117,7 +117,8 @@ def scan(state, first_run):
             key = f"{repo}#{pr['id']}"
             if ONLY and key != ONLY:
                 continue
-            mentions = new_mentions(repo, pr["id"], 0 if ONLY else state.get(key, 0))
+            # With ONLY the Lambda already decided (and filtered my own comments unless in test mode).
+            mentions = new_mentions(repo, pr["id"], 0 if ONLY else state.get(key, 0), bool(ONLY))
             if not mentions:
                 continue
             last = mentions[-1]
