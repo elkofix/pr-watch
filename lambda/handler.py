@@ -213,12 +213,29 @@ def dispatch(pk, action, comment_id=None):
     return status
 
 
+REACT = "https://pi2tools.icesi.edu.co/bitbucket/rest/comment-likes/latest/projects/PIB/repos"
+
+
+def react(repo, pr_id, comment_id, emoticon="eyes"):
+    """Acknowledge a comment with an emoji reaction under my account. Never blocks the review."""
+    try:
+        status, _ = call("PUT", f"{REACT}/{repo}/pull-requests/{pr_id}/comments/{comment_id}/reactions/{emoticon}",
+                         secret("/prwatch/bitbucket-token"))
+        if status >= 400:
+            print(f"reaction on #{comment_id} -> {status}")
+    except Exception as error:
+        print(f"reaction on #{comment_id}: {type(error).__name__}")
+
+
 def review(pk, last_id, previous):
     sets = {"handled": last_id, "nudged": True, "reviewed": True, "merge_requested": False}
     if not claim(pk, sets, {"handled": previous}):
         return
     status = dispatch(pk, "review", last_id)
     print(f"{pk} mention #{last_id} -> dispatch {status}")
+    if status == 204:
+        repo, pr_id = pk.split("#")
+        react(repo, int(pr_id), last_id)  # :eyes: on the comment that triggered the review
     if status != 204:  # give the mention back so the next minute retries it
         claim(pk, {"handled": previous}, {"handled": last_id})
 
