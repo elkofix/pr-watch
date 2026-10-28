@@ -45,13 +45,29 @@ def secret(name):
 NAME = re.compile(r"\b(?:hi|hello|hey|hola|dear)\b[ ,]+alejandro\b|^\s*alejandro\b", re.IGNORECASE | re.MULTILINE)
 
 
-def is_mention(comment, include_own=False):
-    """A mention by someone else (a greeting by name counts); my own only with include_own, and
-    only the explicit @ form, so the agent greeting me on my PRs can never trigger itself."""
+# A short affirmative reply to my "is this ready?" reminder ("yes", "ready", "listo", "ya quedó"...).
+AFFIRM = re.compile(r"\b(?:yes|yep|yeah|yup|sure|ready|done|ok|okay|all set|go ahead|please|sí|si|claro|listo|lista|ya|dale)\b", re.IGNORECASE)
+NEGATION = re.compile(r"\b(?:not|no|nope|never|wait|still|yet|working on|todavía|aún|falta|casi)\b|n't", re.IGNORECASE)
+
+
+def is_nudge(comment):
+    return comment["author"]["slug"] == ME and comment["text"].startswith(NUDGE[:30])
+
+
+def is_mention(comment, include_own=False, parent=None):
+    """A mention by someone else (a greeting by name counts, and so does a short affirmative reply to
+    my reminder); my own only with include_own, and only the explicit @ form, so the agent greeting
+    me on my PRs can never trigger itself."""
     mine = comment["author"]["slug"] == ME
-    if f"@{ME}" in comment["text"].lower():
+    text = comment["text"]
+    if f"@{ME}" in text.lower():
         return include_own or not mine
-    return not mine and bool(NAME.search(comment["text"]))
+    if mine:
+        return False
+    if NAME.search(text):
+        return True
+    return bool(parent and is_nudge(parent) and len(text.strip()) <= 200
+                and AFFIRM.search(text) and not NEGATION.search(text))
 
 
 
@@ -78,10 +94,11 @@ def bb(path, method="GET", body=None):
     return data
 
 
-def comments(nodes):
+def comments(nodes, parent=None):
+    """Every comment in the tree as (comment, parent comment or None)."""
     for node in nodes:
-        yield node
-        yield from comments(node.get("comments", []))
+        yield node, parent
+        yield from comments(node.get("comments", []), node)
 
 
 def mentions_after(repo, pr_id, after):
@@ -91,8 +108,8 @@ def mentions_after(repo, pr_id, after):
         c
         for a in activities
         if a.get("comment")
-        for c in comments([a["comment"]])
-        if is_mention(c, TEST_OWN) and c["id"] > after
+        for c, parent in comments([a["comment"]])
+        if is_mention(c, TEST_OWN, parent) and c["id"] > after
     ]
     return sorted(found, key=lambda c: c["id"])
 
