@@ -38,8 +38,11 @@ Short bullets with ✅ for what works and a plain list for what is left. Say wha
 existing thread (`parent.id`) when the user already commented there; otherwise a new comment.
 
 ## Priority
-Earlier-created PRs have priority; later ones adapt to them. Do not merge a PR that would conflict
-with an earlier open one that should land first.
+Earlier-created PRs have priority; later ones adapt to them, but only when the earlier PR is
+actually able to land: open, merge outcome CLEAN and no NEEDS_WORK. An earlier PR that has conflicts
+or is blocked does NOT hold back a later one: check `/merge` and the reviewer statuses of the earlier
+PR before using it as a reason to wait. Do not merge a PR only if it would conflict with an earlier
+PR that is ready to land.
 
 ## Blocking vs non-blocking
 **Blocking** (verdict NEEDS_WORK): build or tests fail because of the PR, the feature does not do what
