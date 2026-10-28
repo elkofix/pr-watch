@@ -9,7 +9,10 @@ For every open PR in the PIB repos:
     new commits after I took part), after a random 1-5 min wait -> post one reminder asking the author to mention me.
 State lives in DynamoDB (pk = "<repo>#<id>") and is kept for closed PRs too, so a reopened PR is
 not reminded or reviewed twice. The first run only records what already exists.
-Secrets (SSM SecureString): /prwatch/bitbucket-token, /prwatch/github-token.
+Comments the regex rules do not recognise (e.g. "I pushed the fixes", "can you take a look?") are
+classified once by a lightweight Gemini Flash-Lite call, only on PRs I took part in or in replies to my
+own comments; a "yes, review it" verdict counts as a mention. The feature is off without the key.
+Secrets (SSM SecureString): /prwatch/bitbucket-token, /prwatch/github-token, /prwatch/gemini-api-key.
 """
 
 import json
@@ -29,6 +32,8 @@ REPOS = ["contratacion-back", "contratacion-front", "contratacion-files", "contr
 DISPATCH = "https://api.github.com/repos/elkofix/pr-watch/actions/workflows/pr-watch.yml/dispatches"
 TEST_OWN = bool(os.environ.get("TEST_NUDGE_OWN"))  # test mode: my own PRs and mentions count
 NUDGE = "Hi, is this ready for revision? If so, remember to mention me so I get notified."
+GEMINI_MODELS = [os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"), "gemini-3.1-flash-lite"]
+MAX_LLM = 5  # classifications per minute; the rest waits for the next run
 
 table = boto3.resource("dynamodb").Table(os.environ.get("TABLE", "prwatch"))
 ssm = boto3.client("ssm")
@@ -101,17 +106,78 @@ def comments(nodes, parent=None):
         yield from comments(node.get("comments", []), node)
 
 
+_threads = {}  # per invocation: (repo, pr) -> every comment as (comment, parent)
+
+
+def thread(repo, pr_id):
+    if (repo, pr_id) not in _threads:
+        activities = bb(f"{repo}/pull-requests/{pr_id}/activities?limit=100")["values"]
+        _threads[(repo, pr_id)] = [cp for a in activities if a.get("comment")
+                                   for cp in comments([a["comment"]])]
+    return _threads[(repo, pr_id)]
+
+
 def mentions_after(repo, pr_id, after):
     """Mentions of ME by others with id > after, oldest first."""
-    activities = bb(f"{repo}/pull-requests/{pr_id}/activities?limit=100")["values"]
-    found = [
-        c
-        for a in activities
-        if a.get("comment")
-        for c, parent in comments([a["comment"]])
-        if is_mention(c, TEST_OWN, parent) and c["id"] > after
-    ]
+    found = [c for c, parent in thread(repo, pr_id) if is_mention(c, TEST_OWN, parent) and c["id"] > after]
     return sorted(found, key=lambda c: c["id"])
+
+
+def gemini_ready(comment, parent):
+    """True/False: does this comment tell me the PR is ready for another look? None: try again later."""
+    try:
+        key = secret("/prwatch/gemini-api-key")
+    except ClientError:
+        return False  # not configured: feature off
+    context = ""
+    if parent:
+        context = f'Comment it replies to ({parent["author"]["name"]}): """{parent["text"][:700]}"""\n'
+    prompt = (
+        "You help a code reviewer named Alejandro. Decide if the NEW COMMENT on a pull request tells him the "
+        "work is ready for him to review (again): e.g. changes are pushed or fixed, the PR is ready, it answers "
+        "something he asked and asks for another look, or it asks him to check. Comments that are just "
+        "discussion, thanks, status updates between other people, or say it is NOT ready are false. "
+        'Reply ONLY with JSON: {"review": true} or {"review": false}.\n'
+        f'{context}NEW COMMENT ({comment["author"]["name"]}): """{comment["text"][:1500]}"""'
+    )
+    body = {"contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {"temperature": 0, "responseMimeType": "application/json",
+                                 "maxOutputTokens": 512}}
+    for model in GEMINI_MODELS:
+        request = urllib.request.Request(
+            f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+            data=json.dumps(body).encode(), method="POST",
+            headers={"Content-Type": "application/json", "x-goog-api-key": key})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as response:
+                data = json.load(response)
+            text = "".join(p.get("text", "") for p in data["candidates"][0]["content"]["parts"])
+            return bool(json.loads(text).get("review"))
+        except Exception as error:  # try the fallback model, then give up until the next run
+            print(f"gemini {model}: {type(error).__name__}")
+    return None
+
+
+def llm_mentions(repo, pr, item, engaged):
+    """Comments by others the regex rules missed that Gemini says ask for a review, and the new cursor."""
+    scanned = int(item["scanned"])
+    thread_ = thread(repo, pr["id"])
+    top = max([c["id"] for c, _ in thread_] + [scanned])
+    found, calls = [], 0
+    for c, parent in sorted(thread_, key=lambda cp: cp[0]["id"]):
+        if c["id"] <= scanned or c["author"]["slug"] == ME or is_mention(c, False, parent):
+            continue
+        if not (engaged or (parent and parent["author"]["slug"] == ME)):
+            continue
+        if calls >= MAX_LLM:
+            return found, c["id"] - 1
+        calls += 1
+        verdict = gemini_ready(c, parent)
+        if verdict is None:
+            return found, c["id"] - 1
+        if verdict:
+            found.append(c)
+    return found, top
 
 
 def is_clean(repo, pr_id):
@@ -138,9 +204,11 @@ def claim(pk, sets, expect):
         raise
 
 
-def dispatch(pk, action):
-    status, _ = call("POST", DISPATCH, secret("/prwatch/github-token"),
-                     {"ref": "main", "inputs": {"only": pk, "action": action}})
+def dispatch(pk, action, comment_id=None):
+    inputs = {"only": pk, "action": action}
+    if comment_id:
+        inputs["comment_id"] = str(comment_id)  # the comment that asked for the review
+    status, _ = call("POST", DISPATCH, secret("/prwatch/github-token"), {"ref": "main", "inputs": inputs})
     return status
 
 
@@ -148,7 +216,7 @@ def review(pk, last_id, previous):
     sets = {"handled": last_id, "nudged": True, "reviewed": True, "merge_requested": False}
     if not claim(pk, sets, {"handled": previous}):
         return
-    status = dispatch(pk, "review")
+    status = dispatch(pk, "review", last_id)
     print(f"{pk} mention #{last_id} -> dispatch {status}")
     if status != 204:  # give the mention back so the next minute retries it
         claim(pk, {"handled": previous}, {"handled": last_id})
@@ -196,9 +264,10 @@ def process(repo, pr, item, baseline, now):
         if not baseline:  # first ever run: record what exists, react to nothing
             old = mentions_after(repo, pr["id"], 0)
             table.put_item(Item={"pk": pk, "handled": old[-1]["id"] if old else 0, "nudged": True,
-                                 "nudge_at": 0, "clean": clean, "head": head, "since": 0})
+                                 "nudge_at": 0, "clean": clean, "head": head, "since": 0,
+                                 "scanned": max([c["id"] for c, _ in thread(repo, pr["id"])] + [0])})
             return
-        item = {"pk": pk, "handled": 0, "nudged": False, "clean": clean, "head": head,
+        item = {"pk": pk, "handled": 0, "nudged": False, "clean": clean, "head": head, "scanned": 0,
                 "nudge_at": now + random.randint(60, 300),
                 "since": int(pr.get("createdDate", now * 1000) / 1000)}
         table.put_item(Item=item)
@@ -219,10 +288,20 @@ def process(repo, pr, item, baseline, now):
             update(pk, fields)
             item = {**item, **fields}
     handled = int(item["handled"])
+    engaged = handled > 0 or any(r["user"]["slug"] == ME for r in pr.get("reviewers", []))
+    if "scanned" not in item:  # row from before this feature: never classify the old comments
+        item = {**item, "scanned": max([c["id"] for c, _ in thread(repo, pr["id"])] + [0])}
+        update(pk, {"scanned": item["scanned"]})
+    extra, scanned = llm_mentions(repo, pr, item, engaged)
+    pending = max([c["id"] for c in extra] + [int(item.get("llm_pending", 0))])
+    if scanned != int(item["scanned"]) or pending != int(item.get("llm_pending", 0)):
+        item = {**item, "scanned": scanned, "llm_pending": pending}
+        update(pk, {"scanned": scanned, "llm_pending": pending})  # remembered until the PR is clean
     mentions = mentions_after(repo, pr["id"], handled)
-    if mentions:
+    last_id = max([c["id"] for c in mentions] + [pending if pending > handled else 0])
+    if last_id > handled:
         if clean:
-            review(pk, mentions[-1]["id"], handled)
+            review(pk, last_id, handled)
         return
     merge_check(repo, pr, item)
     if item["nudged"] or now < int(item["nudge_at"]):
@@ -257,6 +336,7 @@ def scan_all():
 
 def handler(event, context):
     now = int(time.time())
+    _threads.clear()  # warm containers are reused between runs
     baseline = "Item" in table.get_item(Key={"pk": "_baseline"})
     items = {i["pk"]: i for i in scan_all()}
     failed = set()

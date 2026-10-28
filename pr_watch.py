@@ -27,6 +27,7 @@ TOKEN = os.environ["BITBUCKET_TOKEN"]
 WORKDIR = os.environ.get("WORKDIR", os.path.expanduser("~/work"))  # repos get cloned here
 ONLY = os.environ.get("ONLY", "").strip()  # "repo#id": one-off review of that PR, ignoring state
 ACTION = os.environ.get("ACTION", "review").strip() or "review"  # "review" | "merge"
+COMMENT_ID = os.environ.get("COMMENT_ID", "").strip()  # comment that asked for the review (from the Lambda)
 # Only what the review routine needs; anything else is denied (no prompt is available headless).
 ALLOWED = (
     "Read Grep Glob Write Edit "
@@ -40,7 +41,7 @@ ALLOWED = (
 )
 # ponytail: this list is not a sandbox (python3/docker/git can run anything); the disposable runner is.
 
-PROMPT = """Review Bitbucket PR {repo}#{pr} ({url}). {author} mentioned me in comment #{cid}: "{text}".
+PROMPT = """Review Bitbucket PR {repo}#{pr} ({url}). {author} wrote comment #{cid} asking for my review: "{text}".
 Read {agents} first and follow it exactly (routine, comment style, verdict, merge rules).
 Auth: Bearer $BITBUCKET_TOKEN."""
 
@@ -161,7 +162,12 @@ def scan(state, first_run):
                 review(repo, pr, None)
                 continue
             # With ONLY the Lambda already decided (and filtered my own comments unless in test mode).
-            mentions = new_mentions(repo, pr["id"], 0 if ONLY else state.get(key, 0), bool(ONLY))
+            if ONLY and COMMENT_ID:  # the Lambda points at the exact comment (it may not match the regexes)
+                activities = get(f"{BASE}/{repo}/pull-requests/{pr['id']}/activities?limit=100")["values"]
+                mentions = [c for a in activities if a.get("comment")
+                            for c, _ in comments([a["comment"]]) if str(c["id"]) == COMMENT_ID]
+            else:
+                mentions = new_mentions(repo, pr["id"], 0 if ONLY else state.get(key, 0), bool(ONLY))
             if not mentions:
                 continue
             last = mentions[-1]

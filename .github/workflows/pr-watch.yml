@@ -12,6 +12,10 @@ on:
         description: "review (default) or merge (the PR reached its required approvals)"
         required: false
         default: "review"
+      comment_id:
+        description: "Comment that asked for the review (set by the Lambda)"
+        required: false
+        default: ""
 
 concurrency:
   group: pr-watch
@@ -47,6 +51,7 @@ jobs:
           CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           ONLY: ${{ inputs.only }}
           ACTION: ${{ inputs.action }}
+          COMMENT_ID: ${{ inputs.comment_id }}
           LANG: C.UTF-8
           PYTHONUTF8: "1"
         run: python3 pr_watch.py --once
