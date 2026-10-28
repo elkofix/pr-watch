@@ -15,6 +15,7 @@ Secrets (SSM SecureString): /prwatch/bitbucket-token, /prwatch/github-token.
 import json
 import os
 import random
+import re
 import time
 import urllib.error
 import urllib.request
@@ -38,6 +39,20 @@ def secret(name):
     if name not in _secrets:
         _secrets[name] = ssm.get_parameter(Name=name, WithDecryption=True)["Parameter"]["Value"].strip()
     return _secrets[name]
+
+
+# "@alejitocordoba", or someone greeting me by name ("Hi Alejandro," / a line starting with "Alejandro")
+NAME = re.compile(r"\b(?:hi|hello|hey|hola|dear)\b[ ,]+alejandro\b|^\s*alejandro\b", re.IGNORECASE | re.MULTILINE)
+
+
+def is_mention(comment, include_own=False):
+    """A mention by someone else (a greeting by name counts); my own only with include_own, and
+    only the explicit @ form, so the agent greeting me on my PRs can never trigger itself."""
+    mine = comment["author"]["slug"] == ME
+    if f"@{ME}" in comment["text"].lower():
+        return include_own or not mine
+    return not mine and bool(NAME.search(comment["text"]))
+
 
 
 def call(method, url, token, body=None):
@@ -77,7 +92,7 @@ def mentions_after(repo, pr_id, after):
         for a in activities
         if a.get("comment")
         for c in comments([a["comment"]])
-        if f"@{ME}" in c["text"].lower() and (TEST_OWN or c["author"]["slug"] != ME) and c["id"] > after
+        if is_mention(c, TEST_OWN) and c["id"] > after
     ]
     return sorted(found, key=lambda c: c["id"])
 

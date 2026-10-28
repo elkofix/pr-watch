@@ -10,6 +10,7 @@ First run (no state.json) records the existing mentions as handled: no backlog r
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -51,6 +52,20 @@ review routine and do NOT merge. If nothing is blocking, merge it and add a shor
 Auth: Bearer $BITBUCKET_TOKEN."""
 
 
+# "@alejitocordoba", or someone greeting me by name ("Hi Alejandro," / a line starting with "Alejandro")
+NAME = re.compile(r"\b(?:hi|hello|hey|hola|dear)\b[ ,]+alejandro\b|^\s*alejandro\b", re.IGNORECASE | re.MULTILINE)
+
+
+def is_mention(comment, include_own=False):
+    """A mention by someone else (a greeting by name counts); my own only with include_own, and
+    only the explicit @ form, so the agent greeting me on my PRs can never trigger itself."""
+    mine = comment["author"]["slug"] == ME
+    if f"@{ME}" in comment["text"].lower():
+        return include_own or not mine
+    return not mine and bool(NAME.search(comment["text"]))
+
+
+
 def get(path):
     request = urllib.request.Request(path, headers={"Authorization": f"Bearer {TOKEN}"})
     with urllib.request.urlopen(request, timeout=30) as response:
@@ -71,7 +86,7 @@ def new_mentions(repo, pr_id, after, include_own=False):
         for a in activities
         if a.get("comment")
         for c in comments([a["comment"]])
-        if f"@{ME}" in c["text"].lower() and (include_own or c["author"]["slug"] != ME) and c["id"] > after
+        if is_mention(c, include_own) and c["id"] > after
     ]
     return sorted(found, key=lambda c: c["id"])
 
