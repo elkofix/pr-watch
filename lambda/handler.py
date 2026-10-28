@@ -5,7 +5,8 @@ For every open PR in the PIB repos:
     (only=<repo>#<id>), claiming the mention first so it is handled once;
   * a PR nobody has mentioned me on, after a random 1-5 min wait and once it is CLEAN -> post one
     reminder asking the author to mention me.
-State lives in DynamoDB (pk = "<repo>#<id>"). The first run only records what already exists.
+State lives in DynamoDB (pk = "<repo>#<id>") and is kept for closed PRs too, so a reopened PR is
+not reminded or reviewed twice. The first run only records what already exists.
 Secrets (SSM SecureString): /prwatch/bitbucket-token, /prwatch/github-token.
 """
 
@@ -23,6 +24,7 @@ ME = "alejitocordoba"
 BB = "https://pi2tools.icesi.edu.co/bitbucket/rest/api/1.0/projects/PIB/repos"
 REPOS = ["contratacion-back", "contratacion-front", "contratacion-files", "contratacion-auth"]
 DISPATCH = "https://api.github.com/repos/elkofix/pr-watch/actions/workflows/pr-watch.yml/dispatches"
+TEST_OWN = bool(os.environ.get("TEST_NUDGE_OWN"))  # test mode: my own PRs and mentions count
 NUDGE = "Hi, is this ready for revision? If so, remember to mention me so I get notified."
 
 table = boto3.resource("dynamodb").Table(os.environ.get("TABLE", "prwatch"))
@@ -73,7 +75,7 @@ def mentions_after(repo, pr_id, after):
         for a in activities
         if a.get("comment")
         for c in comments([a["comment"]])
-        if f"@{ME}" in c["text"].lower() and c["author"]["slug"] != ME and c["id"] > after
+        if f"@{ME}" in c["text"].lower() and (TEST_OWN or c["author"]["slug"] != ME) and c["id"] > after
     ]
     return sorted(found, key=lambda c: c["id"])
 
@@ -130,7 +132,8 @@ def process(repo, pr, item, baseline, now):
         return
     if item["nudged"] or now < int(item["nudge_at"]):
         return
-    if handled > 0 or pr["author"]["user"]["slug"] == ME:  # already mentioned before, or my own PR
+    own = pr["author"]["user"]["slug"] == ME and not TEST_OWN
+    if handled > 0 or own:  # already mentioned before, or my own PR
         claim(pk, {"nudged": True}, {"nudged": False})
         return
     if not is_clean(repo, pr["id"]):
@@ -159,7 +162,7 @@ def handler(event, context):
     now = int(time.time())
     baseline = "Item" in table.get_item(Key={"pk": "_baseline"})
     items = {i["pk"]: i for i in scan_all()}
-    seen, failed = set(), set()
+    failed = set()
     for repo in REPOS:
         try:
             prs = bb(f"{repo}/pull-requests?state=OPEN&limit=100")["values"]
@@ -168,14 +171,10 @@ def handler(event, context):
             failed.add(repo)
             continue
         for pr in prs:
-            seen.add(f"{repo}#{pr['id']}")
             try:
                 process(repo, pr, items.get(f"{repo}#{pr['id']}"), baseline, now)
             except Exception as error:  # one broken PR must not stop the others
                 print(f"{repo}#{pr['id']}: {error}")
     if not baseline and not failed:
         table.put_item(Item={"pk": "_baseline"})
-    for pk in items:  # forget closed/merged PRs
-        if pk != "_baseline" and pk not in seen and pk.split("#")[0] not in failed:
-            table.delete_item(Key={"pk": pk})
-    return {"open": len(seen)}
+    return {"repos_failed": sorted(failed)}
