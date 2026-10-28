@@ -87,7 +87,7 @@ def review(repo, pr, mention):
     try:
         done = subprocess.run(
             ["claude", "-p", prompt, "--model", "claude-sonnet-5-5", "--effort", "medium",
-             "--allowedTools", ALLOWED, "--output-format", "json"],
+             "--output-format", "json", "--allowedTools", *ALLOWED.split()],
             cwd=WORKDIR,
             check=False,
             timeout=100 * 60,
