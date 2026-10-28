@@ -34,6 +34,7 @@ TEST_OWN = bool(os.environ.get("TEST_NUDGE_OWN"))  # test mode: my own PRs and m
 NUDGE = "Hi, is this ready for revision? If so, remember to mention me so I get notified."
 GEMINI_MODELS = [os.environ.get("GEMINI_MODEL", "gemini-3.5-flash-lite"), "gemini-3.1-flash-lite"]
 MAX_LLM = 5  # classifications per minute; the rest waits for the next run
+CONFLICTS = "Solve conflicts first"  # reply to a review request on a PR that has merge conflicts
 
 table = boto3.resource("dynamodb").Table(os.environ.get("TABLE", "prwatch"))
 ssm = boto3.client("ssm")
@@ -247,6 +248,27 @@ def merge_check(repo, pr, item):
                           ExpressionAttributeValues={":f": False})
 
 
+def conflicts_reply(repo, pr, pk, comment_id):
+    """Someone asked for a review but the PR has conflicts: answer that comment once. The mention stays
+    pending, so the review goes out by itself when the PR is clean."""
+    try:
+        table.update_item(Key={"pk": pk}, UpdateExpression="SET conflict_replied = :n",
+                          ConditionExpression="attribute_not_exists(conflict_replied) OR conflict_replied < :n",
+                          ExpressionAttributeValues={":n": comment_id})
+    except ClientError as error:
+        if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return  # already answered
+        raise
+    try:
+        bb(f"{repo}/pull-requests/{pr['id']}/comments", "POST",
+           {"text": CONFLICTS, "parent": {"id": comment_id}})
+        print(f"{pk} conflicts reply to comment #{comment_id}")
+    except Exception:
+        table.update_item(Key={"pk": pk}, UpdateExpression="SET conflict_replied = :z",
+                          ExpressionAttributeValues={":z": 0})  # retry next minute
+        raise
+
+
 def update(pk, fields):
     table.update_item(
         Key={"pk": pk},
@@ -306,6 +328,8 @@ def process(repo, pr, item, baseline, now):
     if last_id > handled:
         if clean:
             review(pk, last_id, handled)
+        else:
+            conflicts_reply(repo, pr, pk, last_id)
         return
     merge_check(repo, pr, item)
     if item["nudged"] or now < int(item["nudge_at"]):
