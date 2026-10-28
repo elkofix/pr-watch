@@ -133,7 +133,10 @@ def scan(state, first_run):
 
 
 def main():
-    first_run = not os.path.exists(STATE) and not ONLY
+    if not ONLY:  # detection lives in the AWS Lambda (lambda/handler.py); this only reviews one PR
+        print("no PR given (only=<repo>#<id>): scanning is done by the Lambda, nothing to do")
+        return
+    first_run = False
     state = json.load(open(STATE)) if not first_run else {}
     while True:
         try:
