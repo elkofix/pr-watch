@@ -82,18 +82,33 @@ def review(repo, pr, mention):
     if not shutil.which("claude"):  # installed lazily: runs with nothing to review stay at seconds
         subprocess.run(["npm", "install", "-g", "@anthropic-ai/claude-code"], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # Full transcript goes to the job log (owner accepted that it is public; GitHub masks the secrets).
+    # This repo is public: the agent's text is never printed, only a safe summary (exit code, turns,
+    # denied tool calls and, when the run itself failed, the short error message).
     try:
         done = subprocess.run(
             ["claude", "-p", prompt, "--model", "claude-sonnet-5-5", "--effort", "medium",
-             "--allowedTools", ALLOWED, "--output-format", "stream-json", "--verbose"],
+             "--allowedTools", ALLOWED, "--output-format", "json"],
             cwd=WORKDIR,
             check=False,
             timeout=100 * 60,
+            capture_output=True,
+            text=True,
         )
-        print(f"claude exit={done.returncode}", flush=True)
     except subprocess.TimeoutExpired:
         print("review timed out", flush=True)
+        return
+    print(f"claude exit={done.returncode}", flush=True)
+    try:
+        out = json.loads(done.stdout)
+        print(f"is_error={out.get('is_error')} subtype={out.get('subtype')} "
+              f"turns={out.get('num_turns')}", flush=True)
+        if out.get("is_error"):
+            print(f"error: {str(out.get('result'))[:300]}", flush=True)
+        for denial in out.get("permission_denials", [])[:15]:
+            command = str(denial.get("tool_input", {}).get("command", ""))[:80]
+            print(f"denied: {denial.get('tool_name')} {command}", flush=True)
+    except ValueError:
+        print(f"unparseable output ({len(done.stdout)} bytes), stderr: {done.stderr[:200]!r}", flush=True)
 
 
 def scan(state, first_run):
