@@ -281,6 +281,10 @@ def process(repo, pr, item, baseline, now):
         # new commits on a PR I took part in (reviewed by the agent, or I am a reviewer)
         engaged = int(item["handled"]) > 0 or any(r["user"]["slug"] == ME for r in pr.get("reviewers", []))
         pushed = item.get("head") is not None and head is not None and item["head"] != head and engaged
+        if item["nudged"] and int(item["nudge_at"]) == 0 and not engaged:
+            # recorded at the first run (nudge_at 0), never reminded and I never took part in it:
+            # give it the reminder it missed; any mention, even an old one, cancels it
+            fields.update(nudged=False, nudge_at=now + random.randint(60, 300), since=0)
         if conflicts_fixed or pushed:  # remind once more, unless someone mentions me in the meantime
             # (3 min of slack for a mention posted just before the change was noticed)
             fields.update(nudged=False, nudge_at=now + random.randint(60, 300), since=now - 180)
