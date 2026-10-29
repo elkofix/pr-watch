@@ -205,10 +205,12 @@ def claim(pk, sets, expect):
         raise
 
 
-def dispatch(pk, action, comment_id=None):
+def dispatch(pk, action, comment_id=None, unchanged=False):
     inputs = {"only": pk, "action": action}
     if comment_id:
         inputs["comment_id"] = str(comment_id)  # the comment that asked for the review
+    if unchanged:
+        inputs["unchanged"] = "true"  # merge check: no new commits since the agent reviewed it
     status, _ = call("POST", DISPATCH, secret("/prwatch/github-token"), {"ref": "main", "inputs": inputs})
     return status
 
@@ -227,8 +229,10 @@ def react(repo, pr_id, comment_id, emoticon="eyes"):
         print(f"reaction on #{comment_id}: {type(error).__name__}")
 
 
-def review(pk, last_id, previous):
+def review(pk, last_id, previous, head=None):
     sets = {"handled": last_id, "nudged": True, "reviewed": True, "merge_requested": False}
+    if head:
+        sets["reviewed_head"] = head  # the commit the agent is asked to review
     if not claim(pk, sets, {"handled": previous}):
         return
     status = dispatch(pk, "review", last_id)
@@ -258,8 +262,10 @@ def merge_check(repo, pr, item):
         if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return
         raise
-    status = dispatch(pk, "merge")
-    print(f"{pk} reached its approvals -> merge check dispatch {status}")
+    head = pr.get("fromRef", {}).get("latestCommit")
+    unchanged = bool(head) and item.get("reviewed_head") == head
+    status = dispatch(pk, "merge", unchanged=unchanged)
+    print(f"{pk} reached its approvals -> merge check dispatch {status} (unchanged since review: {unchanged})")
     if status != 204:
         table.update_item(Key={"pk": pk}, UpdateExpression="SET merge_requested = :f",
                           ExpressionAttributeValues={":f": False})
@@ -344,7 +350,7 @@ def process(repo, pr, item, baseline, now):
     last_id = max([c["id"] for c in mentions] + [pending if pending > handled else 0])
     if last_id > handled:
         if clean:
-            review(pk, last_id, handled)
+            review(pk, last_id, handled, head)
         else:
             conflicts_reply(repo, pr, pk, last_id)
         return

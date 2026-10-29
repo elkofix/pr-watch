@@ -28,6 +28,7 @@ WORKDIR = os.environ.get("WORKDIR", os.path.expanduser("~/work"))  # repos get c
 ONLY = os.environ.get("ONLY", "").strip()  # "repo#id": one-off review of that PR, ignoring state
 ACTION = os.environ.get("ACTION", "review").strip() or "review"  # "review" | "merge"
 COMMENT_ID = os.environ.get("COMMENT_ID", "").strip()  # comment that asked for the review (from the Lambda)
+UNCHANGED = os.environ.get("UNCHANGED", "").strip() == "true"  # merge check: head is the reviewed commit
 # Only what the review routine needs; anything else is denied (no prompt is available headless).
 ALLOWED = (
     "Read Grep Glob Write Edit "
@@ -50,6 +51,15 @@ PROMPT_MERGE = """Bitbucket PR {repo}#{pr} ({url}) was reviewed before and now h
 (canMerge is true). Read {agents} first (section "Waiting for approvals"). Check whether anything changed
 since my last review comment (new commits, new blocking comments, my own verdict). If so, do the normal
 review routine and do NOT merge. If nothing is blocking, merge it and add a short natural comment saying so.
+Auth: Bearer $BITBUCKET_TOKEN."""
+
+# Same, but the Lambda checked that the PR head is the commit I already reviewed: no re-review needed.
+PROMPT_MERGE_UNCHANGED = """Bitbucket PR {repo}#{pr} ({url}) now has the approvals Bitbucket requires (canMerge is true),
+and its latest commit is exactly the one I already reviewed: nothing was pushed since my last review, so do NOT
+review it again and do NOT rebuild it. Read {agents} first (section "Waiting for approvals"). Only confirm that
+my own status on the PR is APPROVED (or that I was unable to approve it because it is my own PR) and that nobody
+left a blocking comment after my last review comment. If so, merge it right away (POST .../merge?version=<current
+PR version>) and add a short natural comment saying it was merged. If something blocks, say what and do not merge.
 Auth: Bearer $BITBUCKET_TOKEN."""
 
 
@@ -114,7 +124,7 @@ def review(repo, pr, mention):
     common = dict(repo=repo, pr=pr["id"], url=pr["links"]["self"][0]["href"],
                   agents=os.path.join(HERE, "AGENTS.md"))
     if mention is None:  # action=merge
-        prompt = PROMPT_MERGE.format(**common)
+        prompt = (PROMPT_MERGE_UNCHANGED if UNCHANGED else PROMPT_MERGE).format(**common)
     else:
         prompt = PROMPT.format(author=mention["author"]["displayName"], cid=mention["id"],
                                text=mention["text"][:300], **common)

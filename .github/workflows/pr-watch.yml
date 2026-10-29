@@ -16,6 +16,10 @@ on:
         description: "Comment that asked for the review (set by the Lambda)"
         required: false
         default: ""
+      unchanged:
+        description: "merge action: 'true' when no commit was pushed since the agent reviewed the PR"
+        required: false
+        default: ""
 
 concurrency:
   group: pr-watch
@@ -52,6 +56,7 @@ jobs:
           ONLY: ${{ inputs.only }}
           ACTION: ${{ inputs.action }}
           COMMENT_ID: ${{ inputs.comment_id }}
+          UNCHANGED: ${{ inputs.unchanged }}
           LANG: C.UTF-8
           PYTHONUTF8: "1"
         run: python3 pr_watch.py --once
