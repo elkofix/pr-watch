@@ -132,12 +132,12 @@ def review(repo, pr, mention):
     if not shutil.which("claude"):  # installed lazily: runs with nothing to review stay at seconds
         subprocess.run(["npm", "install", "-g", "@anthropic-ai/claude-code"], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    # This repo is public: the agent's text is never printed, only a safe summary (exit code, turns,
-    # denied tool calls and, when the run itself failed, the short error message).
+    # The whole run is printed to the job log on purpose, for debugging future fixes. The owner decided
+    # this is not sensitive information (GitHub masks the secrets anyway). Do not remove it.
     try:
         done = subprocess.run(
             ["claude", "-p", prompt, "--model", "claude-sonnet-5-5", "--effort", "medium",
-             "--output-format", "json", "--dangerously-skip-permissions"],
+             "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions"],
             cwd=WORKDIR,
             check=False,
             timeout=100 * 60,
@@ -148,17 +148,39 @@ def review(repo, pr, mention):
         print("review timed out", flush=True)
         return
     print(f"claude exit={done.returncode}", flush=True)
-    try:
-        out = json.loads(done.stdout)
-        print(f"is_error={out.get('is_error')} subtype={out.get('subtype')} "
-              f"turns={out.get('num_turns')}", flush=True)
-        if out.get("is_error"):
-            print(f"error: {str(out.get('result'))[:300]}", flush=True)
-        for denial in out.get("permission_denials", [])[:15]:
-            command = str(denial.get("tool_input", {}).get("command", ""))[:300]
-            print(f"denied: {denial.get('tool_name')} {command}", flush=True)
-    except ValueError:
-        print(f"unparseable output ({len(done.stdout)} bytes), stderr: {done.stderr[:200]!r}", flush=True)
+    for line in done.stdout.splitlines():
+        try:
+            show(json.loads(line))
+        except ValueError:
+            print(f"? {line[:300]}", flush=True)
+    if done.stderr.strip():
+        print(f"stderr: {done.stderr.strip()[:1000]}", flush=True)
+
+
+def show(event):
+    """Print one stream-json event as readable lines: agent text, tool calls, short results, summary."""
+    kind = event.get("type")
+    content = event.get("message", {}).get("content", [])
+    if kind == "assistant":
+        for block in content:
+            if block.get("type") == "text" and block["text"].strip():
+                print(f"agent: {block['text'].strip()[:3000]}", flush=True)
+            elif block.get("type") == "tool_use":
+                args = block.get("input", {})
+                print(f"tool {block.get('name')}: {str(args.get('command') or args)[:600]}", flush=True)
+    elif kind == "user" and isinstance(content, list):
+        for block in content:
+            if block.get("type") == "tool_result":
+                body = block.get("content")
+                if isinstance(body, list):
+                    body = " ".join(str(part.get("text", "")) for part in body)
+                flag = " (error)" if block.get("is_error") else ""
+                print(f"  result{flag}: {str(body)[:400]}", flush=True)
+    elif kind == "result":
+        print(f"is_error={event.get('is_error')} subtype={event.get('subtype')} turns={event.get('num_turns')}", flush=True)
+        print(f"final: {str(event.get('result'))[:3000]}", flush=True)
+        for denial in event.get("permission_denials", [])[:15]:
+            print(f"denied: {denial.get('tool_name')} {str(denial.get('tool_input', {}).get('command', ''))[:300]}", flush=True)
 
 
 def scan(state, first_run):
