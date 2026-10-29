@@ -264,6 +264,17 @@ def merge_check(repo, pr, item):
         raise
     head = pr.get("fromRef", {}).get("latestCommit")
     unchanged = bool(head) and item.get("reviewed_head") == head
+    if unchanged and any(r["status"] == "APPROVED" and r["user"]["slug"] == ME for r in pr.get("reviewers", [])):
+        # Nothing was pushed since the agent reviewed and approved it, and the required approvals are in:
+        # merge here instead of asking the agent to re-judge a clear case (it misread the history once).
+        try:
+            bb(f"{repo}/pull-requests/{pr['id']}/merge?version={pr['version']}", "POST", {})
+            print(f"{pk} merged (approved by me, unchanged since the review, approvals complete)")
+        except Exception as error:
+            print(f"{pk} merge failed: {error}")  # stale version or a veto: retried next minute
+            table.update_item(Key={"pk": pk}, UpdateExpression="SET merge_requested = :f",
+                              ExpressionAttributeValues={":f": False})
+        return
     status = dispatch(pk, "merge", unchanged=unchanged)
     print(f"{pk} reached its approvals -> merge check dispatch {status} (unchanged since review: {unchanged})")
     if status != 204:

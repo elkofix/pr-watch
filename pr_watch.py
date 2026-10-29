@@ -48,9 +48,11 @@ Auth: Bearer $BITBUCKET_TOKEN."""
 
 # A PR I already reviewed that now has the approvals Bitbucket requires (any author, mine included).
 PROMPT_MERGE = """Bitbucket PR {repo}#{pr} ({url}) was reviewed before and now has the approvals Bitbucket requires
-(canMerge is true). Read {agents} first (section "Waiting for approvals"). Check whether anything changed
-since my last review comment (new commits, new blocking comments, my own verdict). If so, do the normal
-review routine and do NOT merge. If nothing is blocking, merge it and add a short natural comment saying so.
+(canMerge is true). Read {agents} first (section "Waiting for approvals"). My LAST review is the most recent
+thing I did on the PR: my latest comment or my latest APPROVED / NEEDS_WORK status change, whichever is newest
+(not my first review). Look at the commits and comments made after it: if a commit was pushed after that last
+review, or someone left a blocking comment, do the normal review routine and do NOT merge. Otherwise merge it.
+Either way, finish by posting one short natural comment saying what you did.
 Auth: Bearer $BITBUCKET_TOKEN."""
 
 # Same, but the Lambda checked that the PR head is the commit I already reviewed: no re-review needed.
@@ -60,6 +62,8 @@ review it again and do NOT rebuild it. Read {agents} first (section "Waiting for
 my own status on the PR is APPROVED (or that I was unable to approve it because it is my own PR) and that nobody
 left a blocking comment after my last review comment. If so, merge it right away (POST .../merge?version=<current
 PR version>) and add a short natural comment saying it was merged. If something blocks, say what and do not merge.
+Do not second-guess the claim that no commit was pushed since my review: the activity list also shows older
+RESCOPED events from before my last review, they are not new. Either way, always post one short comment.
 Auth: Bearer $BITBUCKET_TOKEN."""
 
 
