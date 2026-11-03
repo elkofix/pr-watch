@@ -38,7 +38,7 @@ wait_for() {  # description seconds command...
     return 1
 }
 
-secret() { tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; }
+secret() { openssl rand -hex 16; }
 
 up_auth() {
     cd "$STACK_DIR/contratacion-auth"
