@@ -1,0 +1,73 @@
+name: stack-check
+
+# Manual smoke test: can a GitHub runner hold the real stack (Keycloak + files + back) used for live PR
+# checks, and how long / how much memory does it take?
+on:
+  workflow_dispatch:
+
+jobs:
+  stack:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Runner resources
+        run: nproc; free -m; df -h / | tail -1; docker --version
+
+      - name: Bring up the stack
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: bash scripts/stack.sh up
+
+      - name: Live calls with real tokens
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: |
+          A=$(bash scripts/stack.sh token admin-con)
+          C=$(bash scripts/stack.sh token contratador-con)
+          K=$(bash scripts/stack.sh token candidato-con)
+          call() { printf '%-46s -> %s\n' "$1" "$(curl -s -o /tmp/o -w '%{http_code}' "${@:2}"; head -c 120 /tmp/o | tr -d '\n')"; }
+          call "GET /hiring-processes (no token)" http://localhost:8080/api/hiring-processes
+          call "GET /hiring-processes (contratador)" -H "Authorization: Bearer $C" http://localhost:8080/api/hiring-processes
+          call "GET /hiring-stages (admin)" -H "Authorization: Bearer $A" http://localhost:8080/api/hiring-stages
+          call "GET /hiring-processes (candidato)" -H "Authorization: Bearer $K" http://localhost:8080/api/hiring-processes
+          call "files GET /api/documents (no token)" http://localhost:8084/api/documents
+          bash scripts/stack.sh psql "select count(*) || ' app_user rows' from app_user"
+
+      - name: Front in http mode through the Vite proxy
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: |
+          cd ~/stack
+          git -c credential.helper= -c "http.extraHeader=Authorization: Bearer $BITBUCKET_TOKEN" \
+            clone -q --branch dev https://pi2tools.icesi.edu.co/bitbucket/scm/pib/contratacion-front.git
+          cd contratacion-front && npm ci --no-audit --no-fund >/dev/null
+          cp .env.example .env.local
+          nohup npx vite --mode backend --host 127.0.0.1 --port 5173 >/tmp/vite.log 2>&1 &
+          for i in $(seq 60); do curl -s -o /dev/null http://127.0.0.1:5173/ && break; sleep 1; done
+          C=$(bash "$GITHUB_WORKSPACE/scripts/stack.sh" token contratador-con)
+          echo "front /         -> $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/)"
+          echo "front /api/hiring-processes (proxied, contratador) -> $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $C" http://127.0.0.1:5173/api/hiring-processes)"
+
+      - name: Resources with everything running
+        if: always()
+        run: |
+          free -m
+          docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}'
+          ps -eo rss,comm --sort=-rss | head -6
+
+      - name: Back log (on failure)
+        if: failure()
+        run: tail -n 120 ~/stack/back.log || true
