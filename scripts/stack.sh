@@ -8,6 +8,8 @@
 #   scripts/stack.sh token <user>  print a fresh access token (admin-con | contratador-con | candidato-con)
 #   scripts/stack.sh psql "<sql>"  run SQL on the back database
 #   scripts/stack.sh logs          tail the back log
+#   scripts/stack.sh down          stop everything (free the ~5 GB before a full ./gradlew clean build)
+#   scripts/stack.sh check         service-to-service check: back's client token accepted by files
 #
 # Env: BITBUCKET_TOKEN (required); BACK_REF / FILES_REF / AUTH_REF (default dev) to run a PR branch
 # instead, e.g. BACK_REF=feature/x for a back PR; STACK_DIR (default ~/stack).
@@ -40,6 +42,9 @@ wait_for() {  # description seconds command...
 
 secret() { openssl rand -hex 16; }
 
+AUTH_COMPOSE="docker compose -f docker-compose.yml -f stack.override.yml"
+export AUTH_COMPOSE
+
 up_auth() {
     cd "$STACK_DIR/contratacion-auth"
     if [ ! -f .env ]; then
@@ -50,9 +55,18 @@ up_auth() {
             -e "s/^CLIENT_SECRET_CONTRATACION_BACK=.*/CLIENT_SECRET_CONTRATACION_BACK=$(secret)/" \
             -e "s/^ADMIN_API_CLIENT_SECRET=.*/ADMIN_API_CLIENT_SECRET=$(secret)/" .env.example >.env
     fi
+    # The repo publishes Keycloak on 127.0.0.1 only. On Linux a container cannot reach that through
+    # host.docker.internal, so contratacion-files could not fetch the JWKS and answered 401 to every
+    # service token (the back then returned 502). Publish it on all interfaces for the runner.
+    cat >stack.override.yml <<'YML'
+services:
+  keycloak:
+    ports: !override
+      - "8180:8180"
+YML
     # Only Keycloak and its realm/dev-user import; admin-api & co. are not needed for PR checks.
-    docker compose up -d keycloak keycloak-config keycloak-config-dev
-    wait_for "realm import" 300 sh -c '[ "$(docker compose ps -a --format "{{.Service}} {{.State}} {{.ExitCode}}" | grep "^keycloak-config-dev ")" = "keycloak-config-dev exited 0" ]'
+    $AUTH_COMPOSE up -d keycloak keycloak-config keycloak-config-dev
+    wait_for "realm import" 300 sh -c '[ "$($AUTH_COMPOSE ps -a --format "{{.Service}} {{.State}} {{.ExitCode}}" | grep "^keycloak-config-dev ")" = "keycloak-config-dev exited 0" ]'
 }
 
 env_auth() { grep "^$1=" "$STACK_DIR/contratacion-auth/.env" | cut -d= -f2-; }
@@ -71,7 +85,7 @@ up_back() {
     wait_for "back postgres" 120 docker exec nexo_rrhh_db pg_isready -q
     local secret_back
     secret_back=$(env_auth CLIENT_SECRET_CONTRATACION_BACK)
-    pkill -f 'contratacion.*bootRun' 2>/dev/null || true
+    pkill -f 'GradleWrapperMain bootRun' 2>/dev/null || true
     env PROFILE=dev SECURITY_MODE=jwt DB_HOST=localhost DB_PORT=54321 \
         MINIO_URL=http://localhost:9100 MINIO_API_PORT=9100 \
         CLIENT_SECRET_CONTRATACION_BACK="$secret_back" DOCUMENT_FILE_SERVICE_CLIENT_SECRET="$secret_back" \
@@ -90,6 +104,25 @@ token() {
     curl -sf "$REALM/protocol/openid-connect/token" -d grant_type=password -d client_id=contratacion-front \
         -d scope=openid -d "username=$1" --data-urlencode "password=$(env_auth DEV_USER_PASSWORD)" |
         python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])'
+}
+
+check_s2s() {
+    # The token the back uses for contratacion-files (client credentials) must be accepted by files.
+    local tok
+    tok=$(curl -sf "$REALM/protocol/openid-connect/token" -d grant_type=client_credentials         -d client_id=contratacion-back-service --data-urlencode "client_secret=$(env_auth CLIENT_SECRET_CONTRATACION_BACK)" |
+        python3 -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')
+    local code
+    code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok"         "http://localhost:8084/api/documents?subjectId=00000000-0000-4000-8000-000000000001")
+    echo "files with the back's service token -> $code"
+    [ "$code" = 200 ]
+}
+
+down() {
+    pkill -f 'GradleWrapperMain bootRun' 2>/dev/null || true
+    (cd "$STACK_DIR/contratacion-back" && docker compose stop) || true
+    (cd "$STACK_DIR/contratacion-files" && docker compose stop) || true
+    (cd "$STACK_DIR/contratacion-auth" && $AUTH_COMPOSE stop) || true
+    echo "stack stopped (data kept; 'up' starts it again)"
 }
 
 psql_back() { docker exec -i nexo_rrhh_db psql -U nexo_user -d rrhh_nexo_db -qAt -c "$1"; }
@@ -120,10 +153,13 @@ up)
     up_back
     wait "$files_pid"
     seed_users
+    check_s2s || echo "WARNING: contratacion-files rejects the back's service token: calls from back to files will fail (401/502)" >&2
     echo "stack up in $(($(date +%s) - start))s: back http://localhost:8080/api, keycloak :8180, files :8084"
     ;;
 token) token "$2" ;;
 psql) psql_back "$2" ;;
 logs) tail -n "${2:-80}" "$STACK_DIR/back.log" ;;
-*) echo "usage: $0 up | token <user> | psql <sql> | logs [n]" >&2; exit 2 ;;
+down) down ;;
+check) check_s2s ;;
+*) echo "usage: $0 up | down | check | token <user> | psql <sql> | logs [n]" >&2; exit 2 ;;
 esac

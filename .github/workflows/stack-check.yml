@@ -61,12 +61,30 @@ jobs:
           echo "front /         -> $(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:5173/)"
           echo "front /api/hiring-processes (proxied, contratador) -> $(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $C" http://127.0.0.1:5173/api/hiring-processes)"
 
+      - name: Service-to-service (back -> files) and contract generation path
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: |
+          bash scripts/stack.sh check
+          grep -c "HTTP 401" ~/stack/back.log || true
+
       - name: Resources with everything running
         if: always()
         run: |
           free -m
           docker stats --no-stream --format '{{.Name}} {{.MemUsage}} {{.CPUPerc}}'
           ps -eo rss,comm --sort=-rss | head -6
+
+      - name: Full back build with the stack stopped
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: |
+          bash scripts/stack.sh down
+          free -m | sed -n 2p
+          cd ~/stack/contratacion-back
+          /usr/bin/time -v ./gradlew clean build --continue --console=plain >/tmp/build.log 2>/tmp/time.log || true
+          grep -E "tests completed|BUILD|FAILED|OutOfMemory|Java heap" /tmp/build.log | head -15
+          grep -E "Maximum resident|Elapsed" /tmp/time.log
 
       - name: Back log (on failure)
         if: failure()
