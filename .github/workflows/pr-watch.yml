@@ -52,8 +52,7 @@ jobs:
         # suite runs out of heap and hangs. Raise it on the runner only, without touching the repo.
         run: |
           mkdir -p ~/.gradle/init.d
-          printf '%s
-' 'allprojects { tasks.withType(Test).configureEach { maxHeapSize = "3g" } }' > ~/.gradle/init.d/test-heap.gradle
+          echo 'allprojects { tasks.withType(Test).configureEach { maxHeapSize = "3g" } }' > ~/.gradle/init.d/test-heap.gradle
 
       - uses: actions/setup-node@v4
         with:
