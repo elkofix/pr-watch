@@ -21,7 +21,9 @@ Never print the tokens or passwords.
 1. Read the PR (description, diff, activity, existing comments) and the comment that mentioned the user.
 2. Clone the repo, check out the PR branch and merge the target branch into it first to see what lands.
 3. Build and test: back `./gradlew clean build`; front Jest, build, ESLint; files via its Docker build.
-   Compare any failure against the target branch before blaming the PR.
+   Compare any failure against the target branch before blaming the PR. Do the full build BEFORE
+   `stack.sh up`, or after `stack.sh down`: the stack takes ~5 GB and the full back test suite run next
+   to it can run out of memory. A failure you only got with the stack running is not a PR failure.
 4. Run it live (see "Live check" below) whenever the PR needs it. This is not optional.
 5. Decide whether it does what it claims and look for cases nobody considered: Flyway version
    collisions, identity model (`app_user.auth_subject` vs Keycloak `sub`), permissions missing from the
@@ -43,7 +45,12 @@ and contratacion-back with `SECURITY_MODE=jwt` on `http://localhost:8080/api` (a
 creates the `app_user` rows for the dev users). For a back PR run it with `BACK_REF=<PR branch>` (likewise
 `FILES_REF`, `AUTH_REF`). Then `stack.sh token admin-con|contratador-con|candidato-con` gives a fresh token
 (they expire in minutes: fetch one per batch of calls), `stack.sh psql "<sql>"` queries the back DB and
-`stack.sh logs` shows the back log.
+`stack.sh logs` shows the back log, `stack.sh down` stops it and `stack.sh check` verifies that
+contratacion-files accepts the back's service token. If `up` prints a WARNING about that check, any
+502/401 from back -> files is the environment, not the PR: say so and do not blame the PR for it.
+The dev seed already has data to work with: hiring processes `00000000-0000-4000-8000-000000000201`..`203`,
+hiring stages `...0101`.., users and companies; use them (plus API calls/SQL) before saying you could not
+seed a flow.
 - Back PRs: call the new or changed endpoints with real tokens for each role that matters (allowed and
   forbidden), check the status codes, the response bodies and what lands in the DB. Seed the data you need
   through the API or SQL.

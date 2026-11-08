@@ -1,0 +1,28 @@
+name: back-build-check
+
+# Manual: how long the full contratacion-back build takes on a runner, with nothing else running.
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: |
+            17
+            21
+      - name: Clone dev
+        env:
+          BITBUCKET_TOKEN: ${{ secrets.BITBUCKET_TOKEN }}
+        run: |
+          git -c credential.helper= -c "http.extraHeader=Authorization: Bearer $BITBUCKET_TOKEN" \
+            clone -q --branch dev https://pi2tools.icesi.edu.co/bitbucket/scm/pib/contratacion-back.git back
+      - name: Full build
+        working-directory: back
+        run: |
+          ( while sleep 60; do echo "--- $(date +%T) mem: $(free -m | awk '/Mem:/{print $3"MB used"}') java procs: $(pgrep -c java)"; done ) &
+          ./gradlew clean build --continue --console=plain 2>&1 | grep -E "^> Task|tests completed|BUILD|FAILED|OutOfMemory|Java heap|Exception" | grep -vE "UP-TO-DATE|NO-SOURCE|SKIPPED" || true
