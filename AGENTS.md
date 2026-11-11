@@ -84,8 +84,16 @@ it claims, regressions, security holes, data loss, merge conflicts, migration co
 **Not blocking, but always mention in the comment:** formatting and style errors (Spotless,
 Prettier, Checkstyle, ESLint stylistic rules). Name the files and the command that fixes them
 (`./gradlew spotlessApply`, `npm run format`). A PR whose only problems are formatting is ready.
-Pre-existing failures that also fail on the target branch (e.g. the JaCoCo threshold) are not the
-PR's fault: mention, do not block.
+Pre-existing failures that also fail on the target branch are not the PR's fault: mention, do not block.
+
+**Coverage gate (since PR #77, 11 Nov 2026):** `dev` enforces a global 90 % line coverage in
+`./gradlew clean build` (`jacocoTestCoverageVerification`, config in `gradle/jacoco.gradle`) and `dev`
+passes it. So a back PR whose `clean build` fails the coverage check IS blocking (NEEDS_WORK): say the
+measured percentage and which new classes/lines are uncovered (report in `build/coverage`). Always use
+`clean build` (the report aggregates every `*.exec` in `build/jacoco`, stale ones included), never pass
+`-PcoverageMinimum`, and keep Docker running (the Testcontainers tests count towards coverage). Tests that
+only call controller methods directly do not exercise `@PreAuthorize`: for endpoint/security changes ask
+for MockMvc tests with real authorities, coverage alone is not enough.
 
 ## Verdict and merge
 - Blocking problems: PUT `.../pull-requests/<id>/participants/alejitocordoba` with
