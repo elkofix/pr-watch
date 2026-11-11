@@ -118,6 +118,15 @@ def thread(repo, pr_id):
     return _threads[(repo, pr_id)]
 
 
+def reminder_pending(repo, pr_id):
+    """True when the newest comment on the PR is my reminder, i.e. nobody answered it yet."""
+    comments_ = [c for c, _ in thread(repo, pr_id)]
+    if not comments_:
+        return False
+    newest = max(comments_, key=lambda c: c.get("createdDate", 0))
+    return is_nudge(newest)
+
+
 def mentions_after(repo, pr_id, after):
     """Mentions of ME by others with id > after, oldest first."""
     found = [c for c, parent in thread(repo, pr_id) if is_mention(c, TEST_OWN, parent) and c["id"] > after]
@@ -251,6 +260,11 @@ def merge_check(repo, pr, item):
         return
     if not any(r["status"] == "APPROVED" and r["user"]["slug"] != ME for r in pr.get("reviewers", [])):
         return
+    head = pr.get("fromRef", {}).get("latestCommit")
+    if not head or item.get("reviewed_head") != head:
+        # Commits were pushed after the agent's review: never merge them unreviewed (PR 77 was merged
+        # this way). The push already triggers a reminder; a new mention re-reviews and resets the head.
+        return
     info = bb(f"{repo}/pull-requests/{pr['id']}/merge")
     if not (info.get("canMerge") and info.get("outcome") == "CLEAN"):
         return
@@ -262,9 +276,7 @@ def merge_check(repo, pr, item):
         if error.response["Error"]["Code"] == "ConditionalCheckFailedException":
             return
         raise
-    head = pr.get("fromRef", {}).get("latestCommit")
-    unchanged = bool(head) and item.get("reviewed_head") == head
-    if unchanged and any(r["status"] == "APPROVED" and r["user"]["slug"] == ME for r in pr.get("reviewers", [])):
+    if any(r["status"] == "APPROVED" and r["user"]["slug"] == ME for r in pr.get("reviewers", [])):
         # Nothing was pushed since the agent reviewed and approved it, and the required approvals are in:
         # merge here instead of asking the agent to re-judge a clear case (it misread the history once).
         try:
@@ -275,8 +287,8 @@ def merge_check(repo, pr, item):
             table.update_item(Key={"pk": pk}, UpdateExpression="SET merge_requested = :f",
                               ExpressionAttributeValues={":f": False})
         return
-    status = dispatch(pk, "merge", unchanged=unchanged)
-    print(f"{pk} reached its approvals -> merge check dispatch {status} (unchanged since review: {unchanged})")
+    status = dispatch(pk, "merge", unchanged=True)  # reviewed_head == head checked above
+    print(f"{pk} reached its approvals -> merge check dispatch {status} (unchanged since review)")
     if status != 204:
         table.update_item(Key={"pk": pk}, UpdateExpression="SET merge_requested = :f",
                           ExpressionAttributeValues={":f": False})
@@ -376,6 +388,9 @@ def process(repo, pr, item, baseline, now):
         return
     if not clean:
         return  # keeps waiting; the reminder goes out once the PR is clean
+    if reminder_pending(repo, pr["id"]):
+        claim(pk, {"nudged": True}, {"nudged": False})  # my last reminder is still unanswered: no repeat
+        return
     if not claim(pk, {"nudged": True}, {"nudged": False}):
         return
     try:
